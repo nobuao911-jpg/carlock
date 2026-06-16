@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>CarLock BLE</title>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  font-family:sans-serif;
+  background:#111; color:#fff;
+  min-height:100vh;
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  gap:14px; padding:20px;
+}
+h1 { font-size:1.3rem; color:#7eb8ff; }
+#st {
+  font-size:1rem; padding:10px 24px;
+  border-radius:30px; font-weight:bold;
+  background:#222; text-align:center;
+  width:100%; max-width:320px;
+}
+.btn {
+  width:100%; max-width:320px;
+  padding:22px; font-size:1.4rem;
+  font-weight:bold; border:none;
+  border-radius:16px; cursor:pointer;
+  transition:opacity .15s;
+}
+.btn:active { opacity:.65; }
+.btn:disabled { opacity:.3; cursor:not-allowed; }
+#bConnect { background:#2196f3; color:#fff; }
+#bLock    { background:#e53935; color:#fff; }
+#bUnlock  { background:#43a047; color:#fff; }
+#bHazard  { background:#fb8c00; color:#fff; }
+#log {
+  width:100%; max-width:320px;
+  background:#1a1a1a; border-radius:10px;
+  padding:10px 12px; font-size:.78rem;
+  font-family:monospace; color:#4f4;
+  height:90px; overflow-y:auto;
+}
+</style>
+</head>
+<body>
+
+<h1>🚗 CarLock BLE</h1>
+<div id="st">未接続</div>
+
+<button class="btn" id="bConnect" onclick="connect()">🔵 接続する</button>
+<button class="btn" id="bLock"    onclick="send('LOCK')"   disabled>🔒 ロック</button>
+<button class="btn" id="bUnlock"  onclick="send('UNLOCK')" disabled>🔓 アンロック</button>
+<button class="btn" id="bHazard"  onclick="send('HAZARD')" disabled>⚠️ ハザード5秒</button>
+<div id="log"></div>
+
+<script>
+const SVC  = '0000ffe0-0000-1000-8000-00805f9b34fb';
+const CHAR = '0000ffe1-0000-1000-8000-00805f9b34fb';
+let ch = null;
+
+function log(m) {
+  const d = document.getElementById('log');
+  d.innerHTML += m + '<br>';
+  d.scrollTop = d.scrollHeight;
+}
+function st(msg, color) {
+  const s = document.getElementById('st');
+  s.textContent = msg;
+  s.style.background = color || '#222';
+}
+function btns(on) {
+  ['bLock','bUnlock','bHazard'].forEach(id =>
+    document.getElementById(id).disabled = !on);
+  document.getElementById('bConnect').disabled = on;
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    st('Chromeで開いてください', '#b71c1c');
+    return;
+  }
+  try {
+    st('スキャン中...', '#1565c0');
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'CarLock-BLE' }],
+      optionalServices: [SVC]
+    });
+    st('接続中...', '#1565c0');
+    const srv = await dev.gatt.connect();
+    const svc = await srv.getPrimaryService(SVC);
+    ch = await svc.getCharacteristic(CHAR);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', e => {
+      const v = new TextDecoder().decode(e.target.value);
+      log('← ' + v);
+      if (v === 'LOCKED')   st('🔒 施錠中', '#b71c1c');
+      if (v === 'UNLOCKED') st('🔓 解錠中', '#1b5e20');
+      if (v === 'HAZARD_ON')  st('⚠️ ハザード中', '#e65100');
+      if (v === 'HAZARD_OFF') st('✅ ハザード完了', '#222');
+    });
+    dev.addEventListener('gattserverdisconnected', () => {
+      st('切断されました', '#333');
+      btns(false);
+      ch = null;
+    });
+    st('✅ 接続済み', '#1b5e20');
+    btns(true);
+    log('接続完了 → CarLock-BLE');
+  } catch(e) {
+    st('接続失敗', '#b71c1c');
+    log('エラー: ' + e.message);
+  }
+}
+
+async function send(cmd) {
+  if (!ch) return;
+  try {
+    await ch.writeValue(new TextEncoder().encode(cmd));
+    log('→ ' + cmd);
+  } catch(e) {
+    log('送信エラー: ' + e.message);
+  }
+}
+</script>
+</body>
+</html>
