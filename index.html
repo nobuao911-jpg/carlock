@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>CarLock BLE</title>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  font-family:sans-serif; background:#111; color:#fff;
+  min-height:100vh; display:flex; flex-direction:column;
+  align-items:center; padding:24px 20px; gap:12px;
+}
+h1 { font-size:1.3rem; color:#7eb8ff; }
+#st {
+  font-size:1rem; padding:10px 24px; border-radius:30px;
+  font-weight:bold; background:#222; text-align:center;
+  width:100%; max-width:320px;
+}
+
+/* オートロックパネル */
+.panel {
+  width:100%; max-width:320px; background:#1a1a1a;
+  border-radius:14px; padding:14px 16px;
+  flex-direction:column; gap:10px; display:none;
+}
+.panel.show { display:flex; }
+.row { display:flex; align-items:center; justify-content:space-between; }
+.lbl { font-size:.85rem; color:#aaa; }
+
+/* トグルスイッチ */
+.sw { position:relative; width:52px; height:28px; flex-shrink:0; }
+.sw input { opacity:0; width:0; height:0; }
+.sl {
+  position:absolute; inset:0; background:#444;
+  border-radius:28px; cursor:pointer; transition:.3s;
+}
+.sl:before {
+  content:""; position:absolute;
+  width:20px; height:20px; left:4px; bottom:4px;
+  background:#fff; border-radius:50%; transition:.3s;
+}
+input:checked + .sl { background:#2196f3; }
+input:checked + .sl:before { transform:translateX(24px); }
+
+#autoMsg {
+  text-align:center; font-size:.82rem;
+  color:#888; padding:4px 0;
+}
+
+/* ボタン */
+.btn {
+  width:100%; max-width:320px; padding:20px;
+  font-size:1.35rem; font-weight:bold; border:none;
+  border-radius:16px; cursor:pointer; transition:opacity .15s;
+}
+.btn:active { opacity:.65; }
+.btn:disabled { opacity:.28; cursor:not-allowed; }
+#bConnect { background:#2196f3; color:#fff; }
+#bLock    { background:#e53935; color:#fff; }
+#bUnlock  { background:#43a047; color:#fff; }
+#bHazard  { background:#fb8c00; color:#fff; }
+
+#log {
+  width:100%; max-width:320px; background:#1a1a1a;
+  border-radius:10px; padding:10px 12px;
+  font-size:.73rem; font-family:monospace;
+  color:#4f4; height:90px; overflow-y:auto;
+}
+</style>
+</head>
+<body>
+
+<h1>🚗 CarLock BLE</h1>
+<div id="st">未接続</div>
+
+<!-- オートロック設定パネル -->
+<div class="panel" id="autoPanel">
+  <div class="row">
+    <span class="lbl">🔒 切断で自動施錠</span>
+    <label class="sw">
+      <input type="checkbox" id="chkLock" checked onchange="setAutoLock(this.checked)">
+      <span class="sl"></span>
+    </label>
+  </div>
+  <div class="row">
+    <span class="lbl">🔓 接続で自動解錠</span>
+    <label class="sw">
+      <input type="checkbox" id="chkUnlock" checked onchange="setAutoUnlock(this.checked)">
+      <span class="sl"></span>
+    </label>
+  </div>
+  <div id="autoMsg">✅ オートロック有効（切断5秒後に施錠）</div>
+</div>
+
+<button class="btn" id="bConnect" onclick="doConnect()">🔵 接続する</button>
+<button class="btn" id="bLock"    onclick="sendCmd('LOCK')"   disabled>🔒 ロック</button>
+<button class="btn" id="bUnlock"  onclick="sendCmd('UNLOCK')" disabled>🔓 アンロック</button>
+<button class="btn" id="bHazard"  onclick="sendCmd('HAZARD')" disabled>⚠️ ハザード5秒</button>
+<div id="log"></div>
+
+<script>
+const SVC  = '0000ffe0-0000-1000-8000-00805f9b34fb';
+const CHAR = '0000ffe1-0000-1000-8000-00805f9b34fb';
+let ch = null, bleDevice = null;
+let isLocked = true;
+
+function addLog(m) {
+  const d = document.getElementById('log');
+  d.innerHTML += m + '<br>';
+  d.scrollTop = d.scrollHeight;
+}
+function setSt(msg, bg) {
+  const s = document.getElementById('st');
+  s.textContent = msg; s.style.background = bg||'#222';
+}
+function setUI(on) {
+  ['bLock','bUnlock','bHazard'].forEach(id =>
+    document.getElementById(id).disabled = !on);
+  document.getElementById('bConnect').disabled = on;
+  document.getElementById('autoPanel').className = 'panel' + (on?' show':'');
+}
+
+async function setAutoLock(on) {
+  await sendCmd(on ? 'AUTO_LOCK_ON' : 'AUTO_LOCK_OFF');
+  updateAutoMsg();
+}
+async function setAutoUnlock(on) {
+  await sendCmd(on ? 'AUTO_UNLOCK_ON' : 'AUTO_UNLOCK_OFF');
+  updateAutoMsg();
+}
+function updateAutoMsg() {
+  const al = document.getElementById('chkLock').checked;
+  const au = document.getElementById('chkUnlock').checked;
+  const msg = document.getElementById('autoMsg');
+  if (al && au) {
+    msg.textContent = '✅ 切断→自動施錠 ／ 接続→自動解錠';
+    msg.style.color = '#4f4';
+  } else if (al) {
+    msg.textContent = '🔒 切断→自動施錠のみ';
+    msg.style.color = '#fa0';
+  } else if (au) {
+    msg.textContent = '🔓 接続→自動解錠のみ';
+    msg.style.color = '#fa0';
+  } else {
+    msg.textContent = 'オートロック OFF（手動操作のみ）';
+    msg.style.color = '#888';
+  }
+}
+
+async function doConnect() {
+  if (!navigator.bluetooth) {
+    setSt('Chromeで開いてください', '#b71c1c'); return;
+  }
+  try {
+    setSt('スキャン中...', '#1565c0');
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'CarLock-BLE' }],
+      optionalServices: [SVC]
+    });
+    setSt('接続中...', '#1565c0');
+    const srv = await bleDevice.gatt.connect();
+    const svc = await srv.getPrimaryService(SVC);
+    ch = await svc.getCharacteristic(CHAR);
+    await ch.startNotifications();
+
+    ch.addEventListener('characteristicvaluechanged', e => {
+      const v = new TextDecoder().decode(e.target.value);
+      addLog('← ' + v);
+      if (v === 'LOCKED')     { setSt('🔒 施錠中', '#b71c1c');  isLocked=true; }
+      if (v === 'UNLOCKED')   { setSt('🔓 解錠中', '#1b5e20');  isLocked=false; }
+      if (v === 'HAZARD_ON')  setSt('⚠️ ハザード中', '#e65100');
+      if (v === 'HAZARD_OFF') setSt(isLocked?'🔒 施錠中':'🔓 解錠中',
+                                     isLocked?'#b71c1c':'#1b5e20');
+    });
+
+    bleDevice.addEventListener('gattserverdisconnected', () => {
+      setSt('📡 切断→施錠待機中...', '#555');
+      setUI(false); ch = null;
+      addLog('⚠️ BLE切断 → 5秒後に自動施錠');
+      // スマホ側でも表示更新（ESP32側が実際に施錠する）
+      setTimeout(() => {
+        if (!bleDevice || !bleDevice.gatt.connected) {
+          setSt('🔒 自動施錠済み', '#b71c1c');
+          isLocked = true;
+          addLog('🔒 自動施錠完了');
+        }
+      }, 5500);
+    });
+
+    setSt('✅ 接続済み', '#1b5e20');
+    setUI(true);
+    addLog('接続完了 → CarLock-BLE');
+    updateAutoMsg();
+    // 現在の状態を確認
+    setTimeout(() => sendCmd('STATUS'), 600);
+  } catch(e) {
+    setSt('接続失敗', '#b71c1c');
+    addLog('エラー: ' + e.message);
+  }
+}
+
+async function sendCmd(cmd) {
+  if (!ch) return;
+  try {
+    await ch.writeValue(new TextEncoder().encode(cmd));
+    addLog('→ ' + cmd);
+  } catch(e) { addLog('送信エラー: ' + e.message); }
+}
+</script>
+</body>
+</html>
